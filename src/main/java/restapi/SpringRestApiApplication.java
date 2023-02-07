@@ -1,6 +1,6 @@
 package restapi;
 
-import restapi.annotation.SpringBootApplication;
+import spring.annotation.SpringBootApplication;
 import spring.SpringApplication;
 
 @SpringBootApplication

@@ -2,7 +2,7 @@ package spring.config;
 
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.io.Resources;
-import restapi.annotation.SpringBootApplication;
+import spring.annotation.SpringBootApplication;
 import spring.annotation.*;
 import spring.dic.ApplicationContext;
 import spring.dic.ApplicationContextException;
@@ -12,69 +12,73 @@ import spring.server.DispatcherServlet;
 import java.io.File;
 import java.io.IOException;
 import java.lang.annotation.Annotation;
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class ClassInjector {
-    private static final String PROJECT_LOAD_FOLDER = "src\\main\\java\\"; //todo change folder to look for project when jar ...
-    private static final Pattern PATH_PARAMS_PATTERN = Pattern.compile("\\{\\w+}");
-    private static final String REPLACEMENT_PATTERN_STR = "[\\\\w]+";
-
-    private final Set<Class<?>> mapperClasses = new HashSet<>();
-    private final MappersConfig config = new MappersConfig();
-    private final Set<Class<?>> classes = new HashSet<>();
+    private final Set<Class<?>> componentInstanceAnnotations = Set.of(
+            Component.class, Service.class, Controller.class, Configuration.class, RestController.class, ControllerAdvice.class);
+    public final Set<Class<?>> classes = new HashSet<>();
+    private final Set<Class<?>> excludeClasses = new HashSet<>();
     private final Class<?> primaryClass;
+    private final DispatcherServlet dispatcherServlet;
     private ApplicationContext applicationContext;
-    private DispatcherServlet dispatcherServlet;
 
     public ClassInjector(Class<?> primaryClass) {
         this.primaryClass = primaryClass;
-        createContainerWithProperties();
-        try {
-            dispatcherServlet = applicationContext.getInstance(DispatcherServlet.class);
-        } catch (Exception ignored) { // DispatcherServlet will be created everytime
-        }
+        createContextWithProperties();
+        dispatcherServlet = applicationContext.getInstance(DispatcherServlet.class);
     }
 
-    private void createContainerWithProperties() {
+    private void createContextWithProperties() {
         Properties properties;
         try {
             properties = Resources.getResourceAsProperties("application.properties");
         } catch (IOException e) {
-            throw new RuntimeException("No properties file found!"); // todo check original ex
+            throw new RuntimeException("No properties file found!");
         }
 
         applicationContext = new ApplicationContext(properties);
-    }
-
-    public void injectClasses() throws BeanCreationException {
-        if (!primaryClass.isAnnotationPresent(SpringBootApplication.class))
-            return;
-
-        getClasses(primaryClass);
-        registerInterfacesImplementation();
-        config.configure(applicationContext, mapperClasses);
         try {
-            registerClasses();
-        } catch (InvocationTargetException | IllegalAccessException e) {
-            throw new RuntimeException(e); // todo handle exceptions
+            injectClasses();
+        } catch (BeanCreationException | InvocationTargetException | IllegalAccessException e) {
+            throw new RuntimeException(e);
         }
     }
 
-    private void getClasses(Class<?> c) {
+    private void injectClasses() throws BeanCreationException, InvocationTargetException, IllegalAccessException {
+        SpringBootApplication springBootAppAnnotation = primaryClass.getDeclaredAnnotation(SpringBootApplication.class);
+        Class<?>[] excludedClasses = null;
+        if (springBootAppAnnotation != null) {
+            excludedClasses = springBootAppAnnotation.exclude();
+            excludeClasses.addAll(Arrays.asList(excludedClasses));
+        }
+
+        EnableAutoConfiguration autoConfigurationAnnotation = primaryClass.getDeclaredAnnotation(EnableAutoConfiguration.class);
+        if (autoConfigurationAnnotation != null) {
+            excludedClasses = autoConfigurationAnnotation.exclude();
+            excludeClasses.addAll(Arrays.asList(excludedClasses));
+        }
+
+        if (excludedClasses == null)
+            return;
+
+        String packageName = getPackageName(primaryClass);
+        File dir = new File(packageName);
+        scanClasses(dir);
+
+        registerInterfacesImplementation();
+    }
+
+    private String getPackageName(Class<?> c) {
         String classPath = c.getCanonicalName();
         String className = c.getSimpleName();
         int trimIndex = classPath.lastIndexOf('.' + className);
-        String projectNameFolder = classPath.substring(0, trimIndex);
-        File dir = new File(PROJECT_LOAD_FOLDER + projectNameFolder);
-        getClasses(dir);
+        return classPath.substring(0, trimIndex);
     }
 
-    private void getClasses(File dir) {
+    private void scanClasses(File dir) {
         File[] files = dir.listFiles();
         if (files == null)
             return;
@@ -86,25 +90,32 @@ public class ClassInjector {
 
     private void loadClasses(File f) {
         if (f.isDirectory()) {
-            getClasses(f);
+            scanClasses(f);
             return;
         }
 
         String classStr = f.toString();
-        if (f.isFile() && classStr.endsWith(".java")) { // todo work with compiled - .class
+        if (f.isFile() && classStr.endsWith(".class")) {
+//            Class<?> c = createClass(classStr);
+
+            ClassLoader classLoader = ClassLoader.getSystemClassLoader();
             String className = classStr
-                    .substring(PROJECT_LOAD_FOLDER.length(), classStr.lastIndexOf(".java")) // todo work with compiled - .class
+                    .substring(0, classStr.lastIndexOf(".class"))
                     .replace("\\", ".");
 
             Class<?> c;
             try {
-                c = Class.forName(className);
+                c = classLoader.loadClass(className);
             } catch (ClassNotFoundException e) {
                 return;
             }
 
-            if (c.isAnnotationPresent(EnableAutoConfiguration.class))
-                getClasses(c);
+
+            if (c == null)
+                return;
+
+            if (excludeClasses.contains(c))
+                return;
 
             ComponentScan componentScan = c.getDeclaredAnnotation(ComponentScan.class);
             if (componentScan != null) {
@@ -112,10 +123,23 @@ public class ClassInjector {
                 return;
             }
 
-            if (c.isAnnotationPresent(Mapper.class) && c.isInterface())
-                mapperClasses.add(c);
-            else
-                classes.add(c);
+            if (c.isInterface())
+                return;
+
+            classes.add(c);
+        }
+    }
+
+    private void scanComponents(Class<?> c, ComponentScan componentScan) {
+        String[] value = componentScan.value();
+        if (value == null || value.length == 0) {
+            String packageName = getPackageName(c);
+            scanClasses(new File(packageName));
+            return;
+        }
+
+        for (String dir : value) {
+            scanClasses(new File(dir));
         }
     }
 
@@ -128,7 +152,7 @@ public class ClassInjector {
         }
     }
 
-    private void registerClasses() throws BeanCreationException, InvocationTargetException, IllegalAccessException {
+    public void registerClasses() throws BeanCreationException, InvocationTargetException, IllegalAccessException {
         for (Class<?> c : classes) {
             if (c.isInterface())
                 continue;
@@ -144,28 +168,26 @@ public class ClassInjector {
             return;
         }
 
-        if (!isComponentInstance(c))
+        if (!isComponent(c))
             return;
 
-        Object classInstance = applicationContext.getInstance(c);
         Controller controller = c.getDeclaredAnnotation(Controller.class);
         RestController restController = c.getDeclaredAnnotation(RestController.class);
         if (restController == null && controller == null)
             return;
 
-        addController(c, classInstance);
+        Object classInstance = applicationContext.getInstance(c);
+        dispatcherServlet.addController(c, classInstance, applicationContext);
     }
 
-    private void scanComponents(Class<?> c, ComponentScan componentScan) {
-        String[] value = componentScan.value();
-        if (value == null || value.length == 0) {
-            getClasses(c);
-            return;
+    private boolean isComponent(Class<?> c) {
+        Annotation[] classAnnotations = c.getAnnotations();
+        for (Annotation an : classAnnotations) {
+            if (componentInstanceAnnotations.contains(an.annotationType()))
+                return true;
         }
 
-        for (String dir : value) {
-            getClasses(new File(dir));
-        }
+        return false;
     }
 
     private void extractBeansFromConfig(Class<?> c) throws InvocationTargetException, IllegalAccessException {
@@ -184,110 +206,19 @@ public class ClassInjector {
 
     private Object invokeBeanMethod(Method method, Object instance) throws IllegalAccessException, InvocationTargetException {
         Class<?>[] parameterTypes = method.getParameterTypes();
-        Object invoked;
         if (parameterTypes.length == 0)
-            invoked = method.invoke(method, instance);
-        else {
-            Object[] parameters = new Object[parameterTypes.length];
-            for (int i = 0; i < parameters.length; i++) {
-                Object parameterInstance = applicationContext.getInstance(parameterTypes[i]);
-                parameters[i] = parameterInstance;
-            }
+            return method.invoke(method, instance);
 
-            invoked = method.invoke(method, instance, parameters);
+        Object[] parameters = new Object[parameterTypes.length];
+        for (int i = 0; i < parameters.length; i++) {
+            Object parameterInstance = applicationContext.getInstance(parameterTypes[i]);
+            parameters[i] = parameterInstance;
         }
 
-        return invoked;
+        return method.invoke(method, instance, parameters);
     }
 
-    private void addController(Class<?> c, Object classInstance) throws BeanCreationException, IllegalAccessException {
-        RequestMapping requestMapping = c.getDeclaredAnnotation(RequestMapping.class);
-        String mapping = requestMapping.value() != null ? requestMapping.value()[0] : "";
-        processFields(c, classInstance);
-        processMethods(c, classInstance, mapping);
-    }
-
-    private void processFields(Class<?> c, Object instance) throws IllegalAccessException {
-        Field[] fields = c.getDeclaredFields();
-        for (Field field : fields) {
-            field.setAccessible(true);
-            Autowired autowired = field.getDeclaredAnnotation(Autowired.class);
-            if (autowired == null)
-                continue;
-
-            Object o = applicationContext.getInstance(field.getType());
-            field.set(instance, o);
-        }
-    }
-
-    private void processMethods(Class<?> c, Object instance, String mapping) throws BeanCreationException {
-        Method[] declaredMethods = c.getDeclaredMethods();
-        for (Method method : declaredMethods) {
-            method.setAccessible(true);
-            Annotation[] methodAnnotations = method.getDeclaredAnnotations();
-            processMethodAnnotations(instance, mapping, method, methodAnnotations);
-        }
-    }
-
-    void defaultMethod() { // to avoid default in switch
-    }
-
-    private void processMethodAnnotations(Object instance, String mapping, Method method, Annotation[] annotations) throws
-            BeanCreationException {
-        for (Annotation annotation : annotations) {
-            switch (annotation) {
-                case GetMapping getMapping -> putMappings("GET", instance, mapping, method, getMapping.value());
-                case PostMapping postMapping -> putMappings("POST", instance, mapping, method, postMapping.value());
-                case PutMapping putMapping -> putMappings("PUT", instance, mapping, method, putMapping.value());
-                case DeleteMapping delMapping -> putMappings("DELETE", instance, mapping, method, delMapping.value());
-                default -> defaultMethod();
-            }
-        }
-    }
-
-    private void putMappings(String requestMethod, Object instance, String mapping, Method method, String[] paths) throws
-            BeanCreationException {
-        String methodPath = requestMethod + mapping;
-        if (paths == null || paths.length == 0) {
-            validateMapping(methodPath, method);
-            addMapping(methodPath, instance, method);
-            return;
-        }
-
-        for (String path : paths) {
-            String combinedPath = methodPath + path;
-            validateMapping(combinedPath, method);
-            addMapping(combinedPath, instance, method);
-        }
-    }
-
-    private void addMapping(String combinedPath, Object instance, Method method) {
-        Matcher matcher = PATH_PARAMS_PATTERN.matcher(combinedPath);
-        MethodHandler methodHandler = new MethodHandler(method, instance);
-        if (!matcher.find()) {
-            dispatcherServlet.mappings.put(combinedPath, methodHandler);
-            return;
-        }
-
-        String pattern = matcher.replaceAll(REPLACEMENT_PATTERN_STR).replaceAll("\\?", "\\\\?");
-        Pattern compile = Pattern.compile(pattern);
-        dispatcherServlet.starMappings.put(compile, methodHandler);
-    }
-
-    private void validateMapping(String mapping, Method method) throws BeanCreationException {
-        if (dispatcherServlet.mappings.containsKey(mapping)) {
-            String message = String.format("Ambiguous mapping. Cannot map '%s' method.", method.getName());
-            throw new BeanCreationException(message);
-        }
-    }
-
-    private boolean isComponentInstance(Class<?> c) {
-        return c.isAnnotationPresent(Component.class) || c.isAnnotationPresent(Service.class) ||
-                c.isAnnotationPresent(Controller.class) || c.isAnnotationPresent(Configuration.class) ||
-                c.isAnnotationPresent(RestController.class) || c.isAnnotationPresent(ControllerAdvice.class);
-    }
-
-    public ApplicationContext getContainer() {
+    public ApplicationContext getContext() {
         return applicationContext;
     }
 }

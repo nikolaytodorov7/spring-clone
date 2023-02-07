@@ -1,5 +1,7 @@
 package spring.config;
 
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.datasource.pooled.PooledDataSource;
 import org.apache.ibatis.datasource.unpooled.UnpooledDataSource;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
@@ -9,44 +11,33 @@ import org.apache.ibatis.session.SqlSessionFactoryBuilder;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import spring.dic.ApplicationContext;
 
+import java.lang.reflect.Proxy;
 import java.util.Set;
 
 public class MappersConfig {
-    private static final String SPRING_DATASOURCE_DRIVER_CLASSNAME_PROPERTY_KEY = "spring.datasource.driverClassName";
-    private static final String SPRING_DATASOURCE_URL_PROPERTY_KEY = "spring.datasource.url";
-    private static final String SPRING_DATASOURCE_USERNAME_PROPERTY_KEY = "spring.datasource.username";
-    private static final String SPRING_DATASOURCE_PASSWORD_PROPERTY_KEY = "spring.datasource.password";
     private SqlSessionFactory sqlSessionFactory;
+    private Configuration myBatisConfig;
 
-    public void configure(ApplicationContext applicationContext, Set<Class<?>> mapperClasses) {
-        String url = (String) applicationContext.getInstance(SPRING_DATASOURCE_URL_PROPERTY_KEY);
-        String driver = (String) applicationContext.getInstance(SPRING_DATASOURCE_DRIVER_CLASSNAME_PROPERTY_KEY);
-        String username = (String) applicationContext.getInstance(SPRING_DATASOURCE_USERNAME_PROPERTY_KEY);
-        String password = (String) applicationContext.getInstance(SPRING_DATASOURCE_PASSWORD_PROPERTY_KEY);
+    public void configure(ApplicationContext applicationContext) {
+        String url = (String) applicationContext.getInstance("spring.datasource.url");
+        String driver = (String) applicationContext.getInstance("spring.datasource.driverClassName");
+        String username = (String) applicationContext.getInstance("spring.datasource.username");
+        String password = (String) applicationContext.getInstance("spring.datasource.password");
 
-        UnpooledDataSource dataSource = new UnpooledDataSource(driver, url, username, password);
+        PooledDataSource dataSource = new PooledDataSource(driver, url, username, password); // PooledDataSource
         Environment environment = new Environment("environment", new JdbcTransactionFactory(), dataSource);
-        Configuration configuration = createConfiguration(environment, mapperClasses);
-
-        sqlSessionFactory = new SqlSessionFactoryBuilder().build(configuration);
-        createMappers(applicationContext, mapperClasses);
+        myBatisConfig = new Configuration();
+        myBatisConfig.setEnvironment(environment);
+        sqlSessionFactory = new SqlSessionFactoryBuilder().build(myBatisConfig);
     }
 
-    private Configuration createConfiguration(Environment environment, Set<Class<?>> mapperClasses) {
-        Configuration configuration = new Configuration();
-        configuration.setEnvironment(environment);
+    public void createMappers(ApplicationContext applicationContext, Set<Class<?>> mapperClasses) {
         for (Class<?> c : mapperClasses) {
-            configuration.addMapper(c);
-            mapperClasses.add(c);
-        }
+            if (!c.isAnnotationPresent(Mapper.class) || !c.isInterface())
+                continue;
 
-        return configuration;
-    }
-
-    private void createMappers(ApplicationContext applicationContext, Set<Class<?>> mapperClasses) {
-        for (Class<?> c : mapperClasses) {
-            SqlSession session = sqlSessionFactory.openSession();
-            Object mapper = session.getMapper(c);
+            myBatisConfig.addMapper(c);
+            Object mapper = Proxy.newProxyInstance(MappersConfig.class.getClassLoader(), new Class[]{c}, new MapperInvocationHandler(sqlSessionFactory, c));
             applicationContext.registerInstance(c, mapper);
         }
     }

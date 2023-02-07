@@ -6,18 +6,25 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import spring.annotation.*;
 import spring.config.MethodHandler;
-import spring.annotation.PathVariable;
-import spring.annotation.RequestBody;
+import spring.dic.ApplicationContext;
+import spring.exception.BeanCreationException;
 
 import java.io.*;
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class DispatcherServlet extends HttpServlet {
+    private static final Pattern PATH_PARAMS_PATTERN = Pattern.compile("\\{\\w+}");
+    private static final String REPLACEMENT_PATTERN_STR = "[\\\\w]+";
+
     private final Gson gson = new GsonBuilder().setPrettyPrinting().create();
     public Map<String, MethodHandler> mappings = new HashMap<>();
     public Map<Pattern, MethodHandler> starMappings = new HashMap<>(); // posts/*/comments, posts/*
@@ -186,5 +193,101 @@ public class DispatcherServlet extends HttpServlet {
             methodArgs.add(parsedBoolean);
         } else if (parameterType.equals(String.class))
             methodArgs.add(value);
+    }
+
+
+    public void addController(Class<?> c, Object classInstance, ApplicationContext context) throws BeanCreationException, IllegalAccessException {
+        RequestMapping requestMapping = c.getDeclaredAnnotation(RequestMapping.class);
+        String mapping = requestMapping.value() != null ? requestMapping.value()[0] : "";
+        processFields(c, classInstance, context);
+        processMethods(c, classInstance, mapping);
+    }
+
+    private void processFields(Class<?> c, Object instance, ApplicationContext applicationContext) throws IllegalAccessException {
+        Field[] fields = c.getDeclaredFields();
+        for (Field field : fields) {
+            field.setAccessible(true);
+            Autowired autowired = field.getDeclaredAnnotation(Autowired.class);
+            if (autowired == null)
+                continue;
+
+            Object o = applicationContext.getInstance(field.getType());
+            field.set(instance, o);
+        }
+    }
+
+    private void processMethods(Class<?> c, Object instance, String mapping) throws BeanCreationException {
+        Method[] declaredMethods = c.getDeclaredMethods();
+        for (Method method : declaredMethods) {
+            method.setAccessible(true);
+            Annotation[] methodAnnotations = method.getDeclaredAnnotations();
+            processMethodAnnotations(instance, mapping, method, methodAnnotations);
+        }
+    }
+
+    private void processMethodAnnotations(Object instance, String mapping, Method method, Annotation[] annotations) throws BeanCreationException {
+        for (Annotation annotation : annotations) {
+            String methodStr = null;
+            String[] value = switch (annotation) {
+                case GetMapping getMapping -> {
+                    methodStr = "GET";
+                    yield getMapping.value();
+                }
+                case PostMapping postMapping -> {
+                    methodStr = "POST";
+                    yield postMapping.value();
+                }
+                case PutMapping putMapping -> {
+                    methodStr = "PUT";
+                    yield putMapping.value();
+                }
+                case DeleteMapping delMapping -> {
+                    methodStr = "DELETE";
+                    yield delMapping.value();
+                }
+                default -> null;
+            };
+
+            if (methodStr == null)
+                continue;
+
+            putMappings(methodStr, instance, mapping, method, value);
+        }
+    }
+
+    private void putMappings(String requestMethod, Object instance, String mapping, Method method, String[] paths) throws
+            BeanCreationException {
+        String methodPath = requestMethod + mapping;
+        if (paths == null || paths.length == 0) {
+            validateMapping(methodPath, method);
+            addMapping(methodPath, instance, method);
+            return;
+        }
+
+        for (String path : paths) {
+            String combinedPath = methodPath + path;
+            validateMapping(combinedPath, method);
+            addMapping(combinedPath, instance, method);
+        }
+    }
+
+    private void addMapping(String combinedPath, Object instance, Method method) {
+        Matcher matcher = PATH_PARAMS_PATTERN.matcher(combinedPath);
+        MethodHandler methodHandler = new MethodHandler(method, instance);
+        if (!matcher.find()) {
+            mappings.put(combinedPath, methodHandler);
+            return;
+        }
+
+        String pattern = matcher.replaceAll(REPLACEMENT_PATTERN_STR).replaceAll("\\?", "\\\\?");
+        Pattern compile = Pattern.compile(pattern);
+        starMappings.put(compile, methodHandler);
+    }
+
+    private void validateMapping(String mapping, Method method) throws BeanCreationException {
+        if (mappings.containsKey(mapping)) {
+            String message = String.format("Ambiguous mapping. Cannot map '%s' method.", method.getName());
+            throw new BeanCreationException(message);
+        }
     }
 }
