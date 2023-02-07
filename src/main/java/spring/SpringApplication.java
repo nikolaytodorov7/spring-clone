@@ -1,5 +1,6 @@
 package spring;
 
+import spring.config.ClassInjector;
 import spring.exception.BeanCreationException;
 import spring.server.TomcatServer;
 

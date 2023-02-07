@@ -6,7 +6,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import spring.MethodHandler;
+import spring.config.MethodHandler;
 import spring.annotation.PathVariable;
 import spring.annotation.RequestBody;
 
@@ -107,7 +107,6 @@ public class DispatcherServlet extends HttpServlet {
         String queryString = req.getQueryString();
         if (queryString != null) {
             splitPath = queryString.split("=");
-            System.out.println(Arrays.toString(splitPath));
             String[] curSplitPath = new String[splitPath.length / 2];
             int counter = 0;
             for (int i = 1; i <= curSplitPath.length; i += 2) {
@@ -161,7 +160,6 @@ public class DispatcherServlet extends HttpServlet {
     }
 
     private static void addParameters(String value, List<Object> methodArgs, Class<?> parameterType) {
-        System.out.println(value);
         if (parameterType.equals(Byte.class) || parameterType.equals(byte.class)) {
             byte parsedByte = Byte.parseByte(value);
             methodArgs.add(parsedByte);
