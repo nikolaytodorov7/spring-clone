@@ -71,13 +71,16 @@ public class DispatcherServlet extends HttpServlet {
     }
 
     private void processRequest(String path, PrintWriter writer, HttpServletRequest req) throws ServletException, IOException {
-        String mapping = req.getMethod() + path;
-        if (!mappings.containsKey(mapping)) {
-            processSpecialRequest(path, writer, req);
-            return;
-        }
-
+        String requestMethod = req.getMethod();
+        String mapping = requestMethod + path;
         MethodHandler handler = mappings.get(mapping);
+        if (handler != null)
+            processNormalRequest(writer, req, handler);
+        else
+            processPatternRequest(path, writer, req, requestMethod);
+    }
+
+    private void processNormalRequest(PrintWriter writer, HttpServletRequest req, MethodHandler handler) throws IOException, ServletException {
         Object arg = null;
         for (Parameter parameter : handler.parameters) {
             if (parameter.getDeclaredAnnotation(RequestBody.class) != null) {
@@ -97,16 +100,28 @@ public class DispatcherServlet extends HttpServlet {
         }
     }
 
-    private void processSpecialRequest(String path, PrintWriter writer, HttpServletRequest req) throws IOException, ServletException {
-        String method = req.getMethod();
+    private void processPatternRequest(String path, PrintWriter writer, HttpServletRequest req, String requestMethod) throws IOException, ServletException {
+        List<Map.Entry<Pattern, MethodHandler>> matchingPatterns = getMatchingPatterns(path, requestMethod);
+        if (matchingPatterns.size() == 0)
+            return;
+
+        for (Map.Entry<Pattern, MethodHandler> patternMethodHandlerEntry : matchingPatterns) {
+            Pattern pattern = patternMethodHandlerEntry.getKey();
+            MethodHandler methodHandler = patternMethodHandlerEntry.getValue();
+            processReq(path, writer, pattern, methodHandler, req);
+        }
+    }
+
+    private List<Map.Entry<Pattern, MethodHandler>> getMatchingPatterns(String path, String requestMethod) {
+        List<Map.Entry<Pattern, MethodHandler>> matchingPatterns = new ArrayList<>();
         for (Map.Entry<Pattern, MethodHandler> entry : starMappings.entrySet()) {
             Pattern pattern = entry.getKey();
-            if (pattern.matcher(method + path).matches()) {
-                MethodHandler methodHandler = entry.getValue();
-                processReq(path, writer, pattern, methodHandler, req);
-                return;
+            if (pattern.matcher(requestMethod + path).matches()) {
+                matchingPatterns.add(entry);
             }
         }
+
+        return matchingPatterns;
     }
 
     private void processReq(String path, PrintWriter writer, Pattern pattern, MethodHandler methodHandler, HttpServletRequest req) throws IOException, ServletException {
@@ -137,7 +152,8 @@ public class DispatcherServlet extends HttpServlet {
     }
 
 
-    private Object[] getMethodArgs(String[] splitPath, String[] patternSplit, MethodHandler methodHandler, HttpServletRequest req) throws IOException {
+    private Object[] getMethodArgs(String[] splitPath, String[] patternSplit, MethodHandler
+            methodHandler, HttpServletRequest req) throws IOException {
         List<Object> methodArgs = new ArrayList<>();
         List<Object> pathArgs = new ArrayList<>();
         for (int i = 0; i < splitPath.length; i++) {
@@ -196,14 +212,16 @@ public class DispatcherServlet extends HttpServlet {
     }
 
 
-    public void addController(Class<?> c, Object classInstance, ApplicationContext context) throws BeanCreationException, IllegalAccessException {
+    public void addController(Class<?> c, Object classInstance, ApplicationContext context) throws
+            BeanCreationException, IllegalAccessException {
         RequestMapping requestMapping = c.getDeclaredAnnotation(RequestMapping.class);
         String mapping = requestMapping.value() != null ? requestMapping.value()[0] : "";
         processFields(c, classInstance, context);
         processMethods(c, classInstance, mapping);
     }
 
-    private void processFields(Class<?> c, Object instance, ApplicationContext applicationContext) throws IllegalAccessException {
+    private void processFields(Class<?> c, Object instance, ApplicationContext applicationContext) throws
+            IllegalAccessException {
         Field[] fields = c.getDeclaredFields();
         for (Field field : fields) {
             field.setAccessible(true);
@@ -225,7 +243,8 @@ public class DispatcherServlet extends HttpServlet {
         }
     }
 
-    private void processMethodAnnotations(Object instance, String mapping, Method method, Annotation[] annotations) throws BeanCreationException {
+    private void processMethodAnnotations(Object instance, String mapping, Method method, Annotation[]
+            annotations) throws BeanCreationException {
         for (Annotation annotation : annotations) {
             String methodStr = null;
             String[] value = switch (annotation) {
@@ -255,8 +274,8 @@ public class DispatcherServlet extends HttpServlet {
         }
     }
 
-    private void putMappings(String requestMethod, Object instance, String mapping, Method method, String[] paths) throws
-            BeanCreationException {
+    private void putMappings(String requestMethod, Object instance, String mapping, Method method, String[]
+            paths) throws BeanCreationException {
         String methodPath = requestMethod + mapping;
         if (paths == null || paths.length == 0) {
             validateMapping(methodPath, method);
